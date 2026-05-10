@@ -155,18 +155,18 @@
 var profileId = '{{ id }}';
 
 function saveRule(toolName, allowed) {
-  return fetch('/admin/profiles/' + profileId + '/rules', {
+  return fetch('/ui/profiles/' + profileId + '/rules', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'tool_name=' + encodeURIComponent(toolName) + '&allowed=' + (allowed ? '1' : '0')
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tool_name: toolName, allowed: allowed })
   });
 }
 
 function saveBulk(integrationSlug, allowed) {
-  return fetch('/admin/profiles/' + profileId + '/rules/bulk', {
+  return fetch('/ui/profiles/' + profileId + '/rules/bulk', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'integration_slug=' + encodeURIComponent(integrationSlug) + '&allowed=' + (allowed ? '1' : '0')
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ integration_slug: integrationSlug, allowed: allowed })
   });
 }
 

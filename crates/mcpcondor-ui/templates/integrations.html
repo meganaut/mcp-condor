@@ -89,7 +89,7 @@
                 {% if !i.connected %}
                 <button class="btn btn-xs btn-primary">Connect</button>
                 {% else %}
-                <button class="btn btn-xs btn-ghost">Refresh</button>
+                <button class="btn btn-xs btn-ghost js-refresh" data-id="{{ i.id }}">Refresh</button>
                 {% endif %}
                 <div class="dropdown dropdown-end">
                   <button tabindex="0" class="btn btn-xs btn-ghost">
@@ -99,8 +99,7 @@
                   </button>
                   <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-10 w-40 p-1 shadow-lg border border-base-300 text-sm">
                     <li><a href="/ui/integrations/{{ i.id }}/tools">View tools</a></li>
-                    <li><a>Edit</a></li>
-                    <li class="text-error"><a class="text-error">Delete</a></li>
+                    <li class="text-error"><a class="text-error js-delete" data-id="{{ i.id }}" data-name="{{ i.name }}">Delete</a></li>
                   </ul>
                 </div>
               </div>
@@ -160,5 +159,39 @@ function filterTable(input, tableId) {
     row.style.display = row.textContent.toLowerCase().includes(filter) ? '' : 'none';
   });
 }
+
+document.addEventListener('click', function(e) {
+  var refreshBtn = e.target.closest('.js-refresh');
+  if (refreshBtn) {
+    var id = refreshBtn.dataset.id;
+    refreshBtn.disabled = true;
+    refreshBtn.textContent = 'Refreshing…';
+    fetch('/ui/integrations/' + id + '/refresh', { method: 'POST' })
+      .then(function(r) {
+        showToast(r.ok ? 'Refresh started' : 'Refresh failed', !r.ok);
+        refreshBtn.disabled = false;
+        refreshBtn.textContent = 'Refresh';
+      })
+      .catch(function() {
+        showToast('Refresh failed', true);
+        refreshBtn.disabled = false;
+        refreshBtn.textContent = 'Refresh';
+      });
+    return;
+  }
+
+  var deleteBtn = e.target.closest('.js-delete');
+  if (deleteBtn) {
+    var id = deleteBtn.dataset.id;
+    var name = deleteBtn.dataset.name;
+    if (!confirm('Delete integration "' + name + '"? This cannot be undone.')) return;
+    fetch('/ui/integrations/' + id + '/delete', { method: 'POST' })
+      .then(function(r) {
+        if (r.ok) { window.location.reload(); }
+        else { showToast('Delete failed', true); }
+      })
+      .catch(function() { showToast('Delete failed', true); });
+  }
+});
 </script>
 {% endblock %}

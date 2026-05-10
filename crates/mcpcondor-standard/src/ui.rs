@@ -5,11 +5,13 @@ use std::sync::Arc;
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use askama::Template;
 use axum::Form;
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use chrono::{DateTime, Utc};
 use mcpcondor_db::types::AgentOverrideKind;
+use mcpcondor_db::{Integration, ProfileRule};
 use mcpcondor_ui::pages::{
     AgentDetailPage, AgentOverrideRow, AgentRow, AgentSessionRow, AgentsPage,
     AuditEventRow, AuditPage, AuditRow, DashboardPage, DashboardStats,
@@ -19,8 +21,11 @@ use mcpcondor_ui::pages::{
 };
 use ring::hmac;
 use serde::Deserialize;
+use uuid::Uuid;
 
+use crate::admin::{BulkRuleBody, SetRuleBody, validate_slug};
 use crate::crypto::unix_timestamp_secs;
+use crate::downstream::DownstreamClient;
 use crate::handler::AppState;
 
 const COOKIE_NAME: &str = "mcs";
@@ -784,4 +789,170 @@ pub async fn get_ui_audit(
         page: 1,
         total_pages: 1,
     })
+}
+
+// ─── Integration actions ──────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct CreateIntegrationForm {
+    pub name: String,
+    pub slug: String,
+    pub mcp_url: String,
+    pub default_stance: Option<String>,
+}
+
+pub async fn post_ui_create_integration(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<CreateIntegrationForm>,
+) -> Response {
+    if let Err(r) = require_admin(&headers, &state.admin_session_key) {
+        return r;
+    }
+    if let Err(msg) = validate_slug(&form.slug) {
+        return (StatusCode::BAD_REQUEST, msg).into_response();
+    }
+    let id = Uuid::new_v4().to_string();
+    let now = unix_timestamp_secs();
+    let default_stance = form.default_stance.as_deref() == Some("allow");
+    let integration = Integration {
+        id: id.clone(),
+        slug: form.slug.clone(),
+        name: form.name.clone(),
+        mcp_url: form.mcp_url.clone(),
+        oauth_auth_url: None,
+        oauth_token_url: None,
+        oauth_client_id: None,
+        oauth_scopes: None,
+        connected: false,
+        default_stance,
+        created_at: now,
+    };
+    match state.db.insert_integration(&integration).await {
+        Ok(()) => {}
+        Err(mcpcondor_db::StoreError::Conflict(_)) => {
+            return (StatusCode::CONFLICT, "An integration with this slug already exists.").into_response();
+        }
+        Err(e) => {
+            tracing::error!(err = %e, "ui: failed to create integration");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create integration.").into_response();
+        }
+    }
+    if let Ok(client) = DownstreamClient::new(form.mcp_url.clone(), form.slug.clone(), id.clone()) {
+        let client = Arc::new(client);
+        state.downstreams.insert(form.slug.clone(), Arc::clone(&client));
+        let c = Arc::clone(&client);
+        tokio::spawn(async move {
+            let _ = c.initialize(None).await;
+        });
+    }
+    Redirect::to("/ui/integrations").into_response()
+}
+
+pub async fn post_ui_delete_integration(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(r) = require_admin(&headers, &state.admin_session_key) {
+        return r;
+    }
+    let integration = match state.db.get_integration(&id).await.ok().flatten() {
+        Some(i) => i,
+        None => return Redirect::to("/ui/integrations").into_response(),
+    };
+    let _ = state.db.delete_integration(&id).await;
+    state.downstreams.remove(&integration.slug);
+    state.vault_cache.remove(&id);
+    Redirect::to("/ui/integrations").into_response()
+}
+
+pub async fn post_ui_refresh_integration(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(r) = require_admin(&headers, &state.admin_session_key) {
+        return r;
+    }
+    let integration = match state.db.get_integration(&id).await.ok().flatten() {
+        Some(i) => i,
+        None => return (StatusCode::NOT_FOUND, "not found").into_response(),
+    };
+    let ds = match state.downstreams.get(&integration.slug) {
+        Some(ds) => ds.clone(),
+        None => return (StatusCode::SERVICE_UNAVAILABLE, "not connected").into_response(),
+    };
+    let auth_token = match state.vault.get_token(&id).await {
+        Ok(Some(data)) => data.access_token,
+        _ => None,
+    };
+    tokio::spawn(async move {
+        if let Err(e) = ds.initialize(auth_token.as_deref()).await {
+            tracing::warn!(err = %e, "ui: integration refresh failed");
+        }
+    });
+    StatusCode::ACCEPTED.into_response()
+}
+
+// ─── Profile rule actions (called from browser JS) ────────────────────────────
+
+pub async fn post_ui_set_profile_rule(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(profile_id): Path<String>,
+    Json(body): Json<SetRuleBody>,
+) -> Response {
+    if let Err(r) = require_admin(&headers, &state.admin_session_key) {
+        return r;
+    }
+    if body.tool_name.is_empty() || body.tool_name.len() > 256 {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let now = unix_timestamp_secs();
+    let rule = ProfileRule {
+        profile_id,
+        tool_name: body.tool_name,
+        allowed: body.allowed,
+        created_at: now,
+    };
+    match state.db.upsert_profile_rule(&rule).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            tracing::error!(err = %e, "ui: db error setting profile rule");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+pub async fn post_ui_set_profile_rules_bulk(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(profile_id): Path<String>,
+    Json(body): Json<BulkRuleBody>,
+) -> Response {
+    if let Err(r) = require_admin(&headers, &state.admin_session_key) {
+        return r;
+    }
+    let slug = &body.integration_slug;
+    let downstream = match state.downstreams.get(slug) {
+        Some(d) => d.clone(),
+        None => return (StatusCode::NOT_FOUND, "integration not found").into_response(),
+    };
+    let tools = downstream.list_tools().await;
+    if tools.is_empty() {
+        return (StatusCode::NOT_FOUND, "integration has no tools").into_response();
+    }
+    let tool_names: Vec<String> = tools
+        .iter()
+        .map(|t| format!("{}__{}", slug, t.name))
+        .collect();
+    let now = unix_timestamp_secs();
+    match state.db.set_profile_rules_for_integration(&profile_id, &tool_names, body.allowed, now).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            tracing::error!(err = %e, "ui: db error setting bulk profile rules");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }

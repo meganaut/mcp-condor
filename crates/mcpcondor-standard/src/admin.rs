@@ -800,15 +800,15 @@ pub struct CreateIntegrationRequest {
     pub oauth_scopes: Option<Vec<String>>,
 }
 
-fn validate_slug(slug: &str) -> Result<(), Response> {
+pub fn validate_slug(slug: &str) -> Result<(), &'static str> {
     if slug.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "slug must not be empty").into_response());
+        return Err("slug must not be empty");
     }
     if !slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err((StatusCode::BAD_REQUEST, "slug must contain only alphanumeric, '-', or '_'").into_response());
+        return Err("slug must contain only alphanumeric, '-', or '_'");
     }
     if slug.contains("__") {
-        return Err((StatusCode::BAD_REQUEST, "slug must not contain '__'").into_response());
+        return Err("slug must not contain '__'");
     }
     Ok(())
 }
@@ -860,8 +860,8 @@ pub async fn create_integration(
         return e;
     }
 
-    if let Err(e) = validate_slug(&body.slug) {
-        return e;
+    if let Err(msg) = validate_slug(&body.slug) {
+        return (StatusCode::BAD_REQUEST, msg).into_response();
     }
 
     let id = Uuid::new_v4().to_string();

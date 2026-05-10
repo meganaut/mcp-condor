@@ -29,8 +29,9 @@ use crate::handler::{
 use crate::ui::{
     get_ui_agent_detail, get_ui_agents, get_ui_audit, get_ui_dashboard,
     get_ui_integration_tools, get_ui_integrations, get_ui_login, get_ui_profile_detail,
-    get_ui_profiles, post_ui_create_profile, post_ui_login, post_ui_logout,
-    post_ui_rename_profile,
+    get_ui_profiles, post_ui_create_integration, post_ui_create_profile, post_ui_delete_integration,
+    post_ui_login, post_ui_logout, post_ui_refresh_integration, post_ui_rename_profile,
+    post_ui_set_profile_rule, post_ui_set_profile_rules_bulk,
 };
 use crate::oauth::authorize::{get_authorize, post_authorize};
 use crate::oauth::dcr::post_register;
@@ -179,13 +180,17 @@ pub async fn run(config: Config) -> Result<()> {
         .route("/ui", get(get_ui_dashboard))
         .route("/ui/login", get(get_ui_login).post(post_ui_login))
         .route("/ui/logout", post(post_ui_logout))
-        .route("/ui/integrations", get(get_ui_integrations))
+        .route("/ui/integrations", get(get_ui_integrations).post(post_ui_create_integration))
         .route("/ui/integrations/{id}/tools", get(get_ui_integration_tools))
+        .route("/ui/integrations/{id}/delete", post(post_ui_delete_integration))
+        .route("/ui/integrations/{id}/refresh", post(post_ui_refresh_integration))
         .route("/ui/agents", get(get_ui_agents))
         .route("/ui/agents/{id}", get(get_ui_agent_detail))
         .route("/ui/profiles", get(get_ui_profiles).post(post_ui_create_profile))
         .route("/ui/profiles/{id}", get(get_ui_profile_detail))
         .route("/ui/profiles/{id}/rename", post(post_ui_rename_profile))
+        .route("/ui/profiles/{id}/rules", post(post_ui_set_profile_rule))
+        .route("/ui/profiles/{id}/rules/bulk", post(post_ui_set_profile_rules_bulk))
         .route("/ui/audit", get(get_ui_audit))
         // Static assets for the UI
         .route("/assets/{*path}", get(ui_assets))
